@@ -3,6 +3,8 @@
 .iphoto2youtube/
 .swiftpm/
 .xcode-derived-data/
+.codex/
+dist/
 .DS_Store
 __pycache__/
 *.pyc

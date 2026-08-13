@@ -85,19 +85,25 @@ struct ContentView: View {
                                         "Location",
                                         text: $viewModel.commonMetadata.place,
                                         options: viewModel.historicalOptions.places,
-                                        onSelect: viewModel.selectCommonPlace
+                                        onSelect: viewModel.selectCommonPlace,
+                                        onDelete: viewModel.deleteCommonPlaceHistory,
+                                        onCommit: viewModel.commitCommonPlaceHistory
                                     )
                                     historyBackedSingleValueField(
                                         "Event",
                                         text: $viewModel.commonMetadata.eventName,
                                         options: viewModel.historicalOptions.eventNames,
-                                        onSelect: viewModel.selectCommonEventName
+                                        onSelect: viewModel.selectCommonEventName,
+                                        onDelete: viewModel.deleteCommonEventNameHistory,
+                                        onCommit: viewModel.commitCommonEventNameHistory
                                     )
                                     historyBackedSingleValueField(
                                         "Playlist",
                                         text: $viewModel.commonMetadata.playlistsText,
                                         options: viewModel.historicalOptions.playlists,
-                                        onSelect: viewModel.selectCommonPlaylist
+                                        onSelect: viewModel.selectCommonPlaylist,
+                                        onDelete: viewModel.deleteCommonPlaylistHistory,
+                                        onCommit: viewModel.commitCommonPlaylistHistory
                                     )
                                 }
                                 .padding(10)
@@ -115,7 +121,9 @@ struct ContentView: View {
                                     "Camera",
                                     text: $viewModel.commonMetadata.cameraModel,
                                     options: viewModel.historicalOptions.cameraModels,
-                                    onSelect: viewModel.selectCommonCameraModel
+                                    onSelect: viewModel.selectCommonCameraModel,
+                                    onDelete: viewModel.deleteCommonCameraModelHistory,
+                                    onCommit: viewModel.commitCommonCameraModelHistory
                                 )
                                 sidebarTextField("Library Name", text: $viewModel.commonMetadata.libraryName)
                                 sidebarTextField("Timezone", text: $viewModel.commonMetadata.timezone)
@@ -306,22 +314,24 @@ struct ContentView: View {
 
             BufferedTextField(
                 "Participants (manual entry allowed)",
-                text: $viewModel.commonMetadata.participantsText
+                text: $viewModel.commonMetadata.participantsText,
+                onCommit: viewModel.commitCommonParticipantsHistory
             )
 
-            Menu("Add or Remove from History") {
-                if viewModel.historicalOptions.participantNames.isEmpty {
-                    Text("No history")
-                } else {
-                    ForEach(viewModel.historicalOptions.participantNames, id: \.self) { name in
-                        Button {
-                            viewModel.toggleCommonParticipant(name)
-                        } label: {
-                            let selected = viewModel.participantSelection.contains(name)
-                            Label(name, systemImage: selected ? "checkmark.circle.fill" : "circle")
-                        }
-                    }
-                }
+            HistoryOptionsPopoverButton(
+                title: "Add or Remove from History",
+                options: viewModel.historicalOptions.participantNames,
+                emptyText: "No history"
+            ) { name in
+                let selected = viewModel.participantSelection.contains(name)
+                return HistoryOptionRowAccessory(
+                    symbolName: selected ? "checkmark.circle.fill" : "circle",
+                    tint: selected ? .accentColor : .secondary
+                )
+            } onSelect: { name in
+                viewModel.toggleCommonParticipant(name)
+            } onDelete: { name in
+                viewModel.deleteCommonParticipantHistory(name)
             }
 
             HStack {
@@ -852,13 +862,27 @@ struct ContentView: View {
     }
 
     private func uploadCountLine(_ title: String, counts: UploadCategoryCounts) -> some View {
-        Text("\(title): Vlog \(counts.vlog) / Insta360 \(counts.insta360) / HoverX1 \(counts.hoverX1) / Other \(counts.other) / Total \(counts.total)")
-            .font(.subheadline)
+        historyCountLine(
+            color: .blue,
+            text: "\(title): Vlog \(counts.vlog) / Insta360 \(counts.insta360) / HoverX1 \(counts.hoverX1) / Other \(counts.other) / Total \(counts.total)"
+        )
     }
 
     private func deletionCountLine(_ title: String, counts: DeletionCategoryCounts) -> some View {
-        Text("\(title): Insta360 \(counts.insta360) / HoverX1 \(counts.hoverX1) / Other \(counts.other) / Total \(counts.total)")
-            .font(.subheadline)
+        historyCountLine(
+            color: .red,
+            text: "\(title): Insta360 \(counts.insta360) / HoverX1 \(counts.hoverX1) / Other \(counts.other) / Total \(counts.total)"
+        )
+    }
+
+    private func historyCountLine(color: Color, text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(text)
+                .font(.subheadline)
+        }
     }
 
     private var uploadAdjustmentEditor: some View {
@@ -1139,26 +1163,107 @@ struct ContentView: View {
         _ label: String,
         text: Binding<String>,
         options: [String],
-        onSelect: @escaping (String) -> Void
+        onSelect: @escaping (String) -> Void,
+        onDelete: @escaping (String) -> Void,
+        onCommit: (() -> Void)? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
-                BufferedTextField(label, text: text)
-                Menu("History") {
-                    if options.isEmpty {
-                        Text("No history")
-                    } else {
-                        ForEach(options, id: \.self) { option in
-                            Button(option) {
-                                onSelect(option)
+                BufferedTextField(label, text: text, onCommit: onCommit)
+                HistoryOptionsPopoverButton(
+                    title: "History",
+                    options: options,
+                    emptyText: "No history",
+                    onSelect: onSelect,
+                    onDelete: onDelete
+                )
+            }
+        }
+    }
+}
+
+private struct HistoryOptionRowAccessory {
+    let symbolName: String
+    let tint: Color
+}
+
+private struct HistoryOptionsPopoverButton: View {
+    let title: String
+    let options: [String]
+    let emptyText: String
+    let accessory: (String) -> HistoryOptionRowAccessory?
+    let onSelect: (String) -> Void
+    let onDelete: (String) -> Void
+
+    @State private var isPresented = false
+
+    init(
+        title: String,
+        options: [String],
+        emptyText: String,
+        accessory: @escaping (String) -> HistoryOptionRowAccessory? = { _ in nil },
+        onSelect: @escaping (String) -> Void,
+        onDelete: @escaping (String) -> Void
+    ) {
+        self.title = title
+        self.options = options
+        self.emptyText = emptyText
+        self.accessory = accessory
+        self.onSelect = onSelect
+        self.onDelete = onDelete
+    }
+
+    var body: some View {
+        Button(title) {
+            isPresented = true
+        }
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(title)
+                    .font(.headline)
+                if options.isEmpty {
+                    Text(emptyText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(options, id: \.self) { option in
+                                HStack(spacing: 8) {
+                                    Button {
+                                        onSelect(option)
+                                        isPresented = false
+                                    } label: {
+                                        HStack(spacing: 8) {
+                                            if let accessory = accessory(option) {
+                                                Image(systemName: accessory.symbolName)
+                                                    .foregroundStyle(accessory.tint)
+                                            }
+                                            Text(option)
+                                                .lineLimit(1)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    Button(role: .destructive) {
+                                        onDelete(option)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .foregroundStyle(.red)
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
                             }
                         }
                     }
+                    .frame(minWidth: 280, idealWidth: 320, maxWidth: 360, maxHeight: 260)
                 }
             }
+            .padding(12)
         }
     }
 }
@@ -1168,24 +1273,28 @@ private struct BufferedTextField: View {
     @Binding var text: String
     let axis: Axis
     let lineLimit: ClosedRange<Int>?
+    let onCommit: (() -> Void)?
 
     init(
         _ title: String,
         text: Binding<String>,
         axis: Axis = .horizontal,
-        lineLimit: ClosedRange<Int>? = nil
+        lineLimit: ClosedRange<Int>? = nil,
+        onCommit: (() -> Void)? = nil
     ) {
         self.title = title
         self._text = text
         self.axis = axis
         self.lineLimit = lineLimit
+        self.onCommit = onCommit
     }
 
     var body: some View {
         AppKitBufferedTextField(
             title: title,
             text: $text,
-            allowsMultiline: axis == .vertical || (lineLimit?.upperBound ?? 1) > 1
+            allowsMultiline: axis == .vertical || (lineLimit?.upperBound ?? 1) > 1,
+            onCommit: onCommit
         )
     }
 }
@@ -1200,21 +1309,24 @@ private struct AppKitBufferedTextField: NSViewRepresentable {
     @Binding var text: String
     let allowsMultiline: Bool
     let commitMode: CommitMode
+    let onCommit: (() -> Void)?
 
     init(
         title: String,
         text: Binding<String>,
         allowsMultiline: Bool,
-        commitMode: CommitMode = .deferred
+        commitMode: CommitMode = .deferred,
+        onCommit: (() -> Void)? = nil
     ) {
         self.title = title
         self._text = text
         self.allowsMultiline = allowsMultiline
         self.commitMode = commitMode
+        self.onCommit = onCommit
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, commitMode: commitMode)
+        Coordinator(text: $text, commitMode: commitMode, onCommit: onCommit)
     }
 
     func makeNSView(context: Context) -> NSTextField {
@@ -1239,6 +1351,7 @@ private struct AppKitBufferedTextField: NSViewRepresentable {
         context.coordinator.text = $text
         context.coordinator.allowsMultiline = allowsMultiline
         context.coordinator.commitMode = commitMode
+        context.coordinator.onCommit = onCommit
         if !context.coordinator.isEditing, nsView.stringValue != text {
             nsView.stringValue = text
         }
@@ -1251,10 +1364,12 @@ private struct AppKitBufferedTextField: NSViewRepresentable {
         var isEditing = false
         var allowsMultiline = false
         var commitMode: CommitMode
+        var onCommit: (() -> Void)?
 
-        init(text: Binding<String>, commitMode: CommitMode) {
+        init(text: Binding<String>, commitMode: CommitMode, onCommit: (() -> Void)?) {
             self.text = text
             self.commitMode = commitMode
+            self.onCommit = onCommit
         }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
@@ -1293,15 +1408,19 @@ private struct AppKitBufferedTextField: NSViewRepresentable {
         private func commit() {
             guard let textField else { return }
             let currentValue = textField.stringValue
-            guard text.wrappedValue != currentValue else { return }
+            let didChange = text.wrappedValue != currentValue
             switch commitMode {
             case .immediate:
-                text.wrappedValue = currentValue
+                if didChange {
+                    text.wrappedValue = currentValue
+                }
+                onCommit?()
             case .deferred:
-                DispatchQueue.main.async { [text] in
-                    if text.wrappedValue != currentValue {
+                DispatchQueue.main.async { [text, onCommit] in
+                    if didChange, text.wrappedValue != currentValue {
                         text.wrappedValue = currentValue
                     }
+                    onCommit?()
                 }
             }
         }

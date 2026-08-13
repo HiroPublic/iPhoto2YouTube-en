@@ -1308,6 +1308,10 @@ struct NativeAppEnvironment: Equatable, Sendable {
         supportDirectoryURL.appendingPathComponent("upload_limit_state.json", isDirectory: false)
     }
 
+    var metadataHistoryFileURL: URL {
+        supportDirectoryURL.appendingPathComponent("metadata_history.json", isDirectory: false)
+    }
+
     static func `default`() -> NativeAppEnvironment {
         let packageRoot = resolveWorkspaceRoot()
         return NativeAppEnvironment(
@@ -1366,6 +1370,27 @@ private struct UploadLimitStateRecord: Codable {
     var estimatedResetAt: String
 }
 
+private struct MetadataHistoryRecord: Codable, Equatable {
+    var places: [String] = []
+    var eventNames: [String] = []
+    var participantNames: [String] = []
+    var playlists: [String] = []
+    var cameraModels: [String] = []
+    var suppressedPlaces: [String] = []
+    var suppressedEventNames: [String] = []
+    var suppressedParticipantNames: [String] = []
+    var suppressedPlaylists: [String] = []
+    var suppressedCameraModels: [String] = []
+}
+
+enum MetadataHistoryKind {
+    case place
+    case eventName
+    case participantName
+    case playlist
+    case cameraModel
+}
+
 struct UploadLimitStateStore {
     let environment: NativeAppEnvironment
 
@@ -1400,6 +1425,349 @@ struct UploadLimitStateStore {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
+    }
+}
+
+struct MetadataHistoryStore {
+    let environment: NativeAppEnvironment
+
+    func load() -> HistoricalMetadataOptions {
+        let record = loadRecord()
+        return HistoricalMetadataOptions(
+            places: record.places,
+            eventNames: record.eventNames,
+            participantNames: record.participantNames,
+            playlists: record.playlists,
+            cameraModels: record.cameraModels
+        )
+    }
+
+    func suppressed() -> HistoricalMetadataOptions {
+        let record = loadRecord()
+        return HistoricalMetadataOptions(
+            places: record.suppressedPlaces,
+            eventNames: record.suppressedEventNames,
+            participantNames: record.suppressedParticipantNames,
+            playlists: record.suppressedPlaylists,
+            cameraModels: record.suppressedCameraModels
+        )
+    }
+
+    func remember(
+        place: String? = nil,
+        eventName: String? = nil,
+        participantNames: [String] = [],
+        playlists: [String] = [],
+        cameraModel: String? = nil
+    ) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: environment.supportDirectoryURL, withIntermediateDirectories: true)
+
+        var record = loadRecord()
+        normalizedSingleValue(place).forEach { insertUnique($0, into: &record.places) }
+        normalizedSingleValue(eventName).forEach { insertUnique($0, into: &record.eventNames) }
+        normalizedParticipants(participantNames).forEach { insertUnique($0, into: &record.participantNames) }
+        normalizedCSVValues(playlists).forEach { insertUnique($0, into: &record.playlists) }
+        normalizedSingleValue(cameraModel).forEach { insertUnique($0, into: &record.cameraModels) }
+        normalizedSingleValue(place).forEach { removeValue($0, from: &record.suppressedPlaces) }
+        normalizedSingleValue(eventName).forEach { removeValue($0, from: &record.suppressedEventNames) }
+        normalizedParticipants(participantNames).forEach { removeValue($0, from: &record.suppressedParticipantNames) }
+        normalizedCSVValues(playlists).forEach { removeValue($0, from: &record.suppressedPlaylists) }
+        normalizedSingleValue(cameraModel).forEach { removeValue($0, from: &record.suppressedCameraModels) }
+
+        let data = try JSONEncoder().encode(record)
+        try data.write(to: environment.metadataHistoryFileURL, options: .atomic)
+    }
+
+    func remove(_ value: String, kind: MetadataHistoryKind) throws {
+        let normalizedValues: [String]
+        switch kind {
+        case .place, .eventName, .cameraModel:
+            normalizedValues = normalizedSingleValue(value)
+        case .participantName:
+            normalizedValues = normalizedParticipants([value])
+        case .playlist:
+            normalizedValues = normalizedCSVValues([value])
+        }
+        guard !normalizedValues.isEmpty else { return }
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: environment.supportDirectoryURL, withIntermediateDirectories: true)
+
+        var record = loadRecord()
+        for normalizedValue in normalizedValues {
+            switch kind {
+            case .place:
+                removeValue(normalizedValue, from: &record.places)
+                insertUnique(normalizedValue, into: &record.suppressedPlaces)
+            case .eventName:
+                removeValue(normalizedValue, from: &record.eventNames)
+                insertUnique(normalizedValue, into: &record.suppressedEventNames)
+            case .participantName:
+                removeValue(normalizedValue, from: &record.participantNames)
+                insertUnique(normalizedValue, into: &record.suppressedParticipantNames)
+            case .playlist:
+                removeValue(normalizedValue, from: &record.playlists)
+                insertUnique(normalizedValue, into: &record.suppressedPlaylists)
+            case .cameraModel:
+                removeValue(normalizedValue, from: &record.cameraModels)
+                insertUnique(normalizedValue, into: &record.suppressedCameraModels)
+            }
+        }
+
+        let data = try JSONEncoder().encode(record)
+        try data.write(to: environment.metadataHistoryFileURL, options: .atomic)
+    }
+
+    func backfillFromUploadHistory() throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: environment.supportDirectoryURL, withIntermediateDirectories: true)
+
+        var record = loadRecord()
+        let recentOptions = RecentUploadHistoryLoader.loadOptions(from: environment)
+        recentOptions.places.reversed().forEach { insertUnique($0, into: &record.places) }
+        recentOptions.eventNames.reversed().forEach { insertUnique($0, into: &record.eventNames) }
+        recentOptions.participantNames.reversed().forEach { insertUnique($0, into: &record.participantNames) }
+        recentOptions.playlists.reversed().forEach { insertUnique($0, into: &record.playlists) }
+        recentOptions.cameraModels.reversed().forEach { insertUnique($0, into: &record.cameraModels) }
+
+        let data = try JSONEncoder().encode(record)
+        try data.write(to: environment.metadataHistoryFileURL, options: .atomic)
+    }
+
+    private func loadRecord() -> MetadataHistoryRecord {
+        let fileURL = environment.metadataHistoryFileURL
+        guard let data = try? Data(contentsOf: fileURL),
+              let record = try? JSONDecoder().decode(MetadataHistoryRecord.self, from: data) else {
+            return MetadataHistoryRecord()
+        }
+        return record
+    }
+
+    private func insertUnique(_ value: String, into values: inout [String]) {
+        if let index = values.firstIndex(of: value) {
+            values.remove(at: index)
+        }
+        values.insert(value, at: 0)
+    }
+
+    private func removeValue(_ value: String, from values: inout [String]) {
+        if let index = values.firstIndex(of: value) {
+            values.remove(at: index)
+        }
+    }
+
+    private func normalizedSingleValue(_ value: String?) -> [String] {
+        guard let value else { return [] }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? [] : [trimmed]
+    }
+
+    private func normalizedCSVValues(_ values: [String]) -> [String] {
+        values
+            .flatMap {
+                $0.split(separator: ",")
+                    .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            }
+            .filter { !$0.isEmpty }
+    }
+
+    private func normalizedParticipants(_ values: [String]) -> [String] {
+        values
+            .flatMap {
+                $0.replacingOccurrences(of: "\u{3000}", with: ",")
+                    .split(whereSeparator: { $0 == "," || $0 == "\n" })
+                    .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            }
+            .filter { !$0.isEmpty }
+    }
+}
+
+private enum RecentUploadHistoryLoader {
+    static func loadOptions(from environment: NativeAppEnvironment) -> HistoricalMetadataOptions {
+        let supportURL = environment.supportDirectoryURL
+        let uploadHistoryDBURL = supportURL.appendingPathComponent("upload_history.db", isDirectory: false)
+        if let options = loadOptionsFromUploadHistoryDB(uploadHistoryDBURL) {
+            return options
+        }
+        let ledgerURL = supportURL.appendingPathComponent("ledger.csv", isDirectory: false)
+        return loadOptionsFromLedgerCSV(ledgerURL)
+    }
+
+    private static func loadOptionsFromUploadHistoryDB(_ url: URL) -> HistoricalMetadataOptions? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+
+        var db: OpaquePointer?
+        guard sqlite3_open(url.path, &db) == SQLITE_OK, let db else {
+            if let db { sqlite3_close(db) }
+            return nil
+        }
+        defer { sqlite3_close(db) }
+
+        let sql = """
+        SELECT place, event_name, participants_json, playlists_json, camera_model
+        FROM upload_history
+        ORDER BY uploaded_at DESC, id DESC
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            if let statement { sqlite3_finalize(statement) }
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var places: [String] = []
+        var eventNames: [String] = []
+        var participantNames: [String] = []
+        var playlists: [String] = []
+        var cameraModels: [String] = []
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            normalizedSingleValue(sqliteText(statement, column: 0)).forEach { insertUnique($0, into: &places) }
+            normalizedSingleValue(sqliteText(statement, column: 1)).forEach { insertUnique($0, into: &eventNames) }
+            parseJSONStringArray(sqliteText(statement, column: 2), splitParticipants).forEach { insertUnique($0, into: &participantNames) }
+            parseJSONStringArray(sqliteText(statement, column: 3), splitCSVValues).forEach { insertUnique($0, into: &playlists) }
+            normalizedSingleValue(sqliteText(statement, column: 4)).forEach { insertUnique($0, into: &cameraModels) }
+        }
+
+        return HistoricalMetadataOptions(
+            places: places,
+            eventNames: eventNames,
+            participantNames: participantNames,
+            playlists: playlists,
+            cameraModels: cameraModels
+        )
+    }
+
+    private static func loadOptionsFromLedgerCSV(_ url: URL) -> HistoricalMetadataOptions {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            return HistoricalMetadataOptions()
+        }
+        let rows = content
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        guard let headerLine = rows.first else {
+            return HistoricalMetadataOptions()
+        }
+        let headers = parseCSVLine(headerLine)
+        let placeIndex = headers.firstIndex(of: "place")
+        let eventIndex = headers.firstIndex(of: "event_name")
+        let participantIndex = headers.firstIndex(of: "participants")
+        let playlistIndex = headers.firstIndex(of: "playlists")
+        let cameraModelIndex = headers.firstIndex(of: "camera_model")
+
+        var places: [String] = []
+        var eventNames: [String] = []
+        var participantNames: [String] = []
+        var playlists: [String] = []
+        var cameraModels: [String] = []
+
+        for row in rows.dropFirst().reversed() {
+            let values = parseCSVLine(row)
+            if let placeIndex, placeIndex < values.count {
+                normalizedSingleValue(values[placeIndex]).forEach { insertUnique($0, into: &places) }
+            }
+            if let eventIndex, eventIndex < values.count {
+                normalizedSingleValue(values[eventIndex]).forEach { insertUnique($0, into: &eventNames) }
+            }
+            if let participantIndex, participantIndex < values.count {
+                splitParticipants(values[participantIndex]).forEach { insertUnique($0, into: &participantNames) }
+            }
+            if let playlistIndex, playlistIndex < values.count {
+                splitCSVValues(values[playlistIndex]).forEach { insertUnique($0, into: &playlists) }
+            }
+            if let cameraModelIndex, cameraModelIndex < values.count {
+                normalizedSingleValue(values[cameraModelIndex]).forEach { insertUnique($0, into: &cameraModels) }
+            }
+        }
+
+        return HistoricalMetadataOptions(
+            places: places,
+            eventNames: eventNames,
+            participantNames: participantNames,
+            playlists: playlists,
+            cameraModels: cameraModels
+        )
+    }
+
+    private static func sqliteText(_ statement: OpaquePointer?, column: Int32) -> String {
+        guard let cString = sqlite3_column_text(statement, column) else { return "" }
+        return String(cString: cString)
+    }
+
+    private static func parseJSONStringArray(
+        _ raw: String,
+        _ fallbackSplitter: (String) -> [String]
+    ) -> [String] {
+        guard !raw.isEmpty else { return [] }
+        if let data = raw.data(using: .utf8),
+           let values = try? JSONSerialization.jsonObject(with: data) as? [String] {
+            return values.flatMap(fallbackSplitter)
+        }
+        return fallbackSplitter(raw)
+    }
+
+    private static func insertUnique(_ value: String, into values: inout [String]) {
+        guard !value.isEmpty else { return }
+        if let index = values.firstIndex(of: value) {
+            values.remove(at: index)
+        }
+        values.append(value)
+    }
+
+    private static func normalizedSingleValue(_ raw: String) -> [String] {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? [] : [value]
+    }
+
+    private static func splitCSVValues(_ raw: String) -> [String] {
+        raw.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func splitParticipants(_ raw: String) -> [String] {
+        raw.replacingOccurrences(of: "\u{3000}", with: ",")
+            .split(whereSeparator: { $0 == "," || $0 == "\n" })
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func parseCSVLine(_ line: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var inQuotes = false
+        let characters = Array(line)
+        var index = 0
+        while index < characters.count {
+            let char = characters[index]
+            switch char {
+            case "\"":
+                if inQuotes {
+                    let nextIndex = index + 1
+                    if nextIndex < characters.count, characters[nextIndex] == "\"" {
+                        current.append("\"")
+                        index += 1
+                    } else {
+                        inQuotes = false
+                    }
+                } else {
+                    inQuotes = true
+                }
+            case ",":
+                if inQuotes {
+                    current.append(char)
+                } else {
+                    result.append(current)
+                    current = ""
+                }
+            default:
+                current.append(char)
+            }
+            index += 1
+        }
+        result.append(current)
+        return result.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 }
 
@@ -1633,115 +2001,57 @@ enum LedgerSuggestionLoader {
     private static let excludedParticipantNames = Set(["Alice", "Bob"])
 
     static func loadOptions(from environment: NativeAppEnvironment) -> HistoricalMetadataOptions {
-        let workspaceRoot = URL(fileURLWithPath: environment.workspaceRoot, isDirectory: true)
-        let ledgerURL = workspaceRoot
-            .appendingPathComponent(environment.supportDirectory, isDirectory: true)
-            .appendingPathComponent("ledger.csv")
-        guard let content = try? String(contentsOf: ledgerURL, encoding: .utf8) else {
-            return HistoricalMetadataOptions()
-        }
-        let rows = content
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-        guard let headerLine = rows.first else {
-            return HistoricalMetadataOptions()
-        }
-        let headers = parseCSVLine(headerLine)
-        let placeIndex = headers.firstIndex(of: "place")
-        let eventIndex = headers.firstIndex(of: "event_name")
-        let participantIndex = headers.firstIndex(of: "participants")
-        let playlistIndex = headers.firstIndex(of: "playlists")
-        let cameraModelIndex = headers.firstIndex(of: "camera_model")
-
-        var places = Set<String>()
-        var eventNames = Set<String>()
-        var participantNames = Set(defaultParticipantNames)
-        var playlists = Set<String>()
-        var cameraModels = Set(defaultCameraModels)
-
-        for row in rows.dropFirst() {
-            let values = parseCSVLine(row)
-            if let placeIndex, placeIndex < values.count {
-                normalized(values[placeIndex]).forEach { places.insert($0) }
-            }
-            if let eventIndex, eventIndex < values.count {
-                normalized(values[eventIndex]).forEach { eventNames.insert($0) }
-            }
-            if let participantIndex, participantIndex < values.count {
-                splitParticipants(values[participantIndex]).forEach { participantNames.insert($0) }
-            }
-            if let playlistIndex, playlistIndex < values.count {
-                splitCSVValues(values[playlistIndex]).forEach { playlists.insert($0) }
-            }
-            if let cameraModelIndex, cameraModelIndex < values.count {
-                normalized(values[cameraModelIndex]).forEach { cameraModels.insert($0) }
-            }
-        }
-
+        let recentOptions = RecentUploadHistoryLoader.loadOptions(from: environment)
+        let store = MetadataHistoryStore(environment: environment)
+        let persistedOptions = store.load()
+        let suppressedOptions = store.suppressed()
         return HistoricalMetadataOptions(
-            places: places.sorted(),
-            eventNames: eventNames.sorted(),
-            participantNames: participantNames.subtracting(excludedParticipantNames).sorted(),
-            playlists: playlists.sorted(),
-            cameraModels: cameraModels.sorted()
+            places: filterSuppressed(
+                mergeRecentFirst(primary: persistedOptions.places, secondary: recentOptions.places),
+                suppressed: suppressedOptions.places
+            ),
+            eventNames: filterSuppressed(
+                mergeRecentFirst(primary: persistedOptions.eventNames, secondary: recentOptions.eventNames),
+                suppressed: suppressedOptions.eventNames
+            ),
+            participantNames: mergeRecentFirst(
+                primary: persistedOptions.participantNames,
+                secondary: recentOptions.participantNames,
+                trailing: defaultParticipantNames
+            )
+            .filter { !excludedParticipantNames.contains($0) }
+            .filter { !suppressedOptions.participantNames.contains($0) },
+            playlists: filterSuppressed(
+                mergeRecentFirst(primary: persistedOptions.playlists, secondary: recentOptions.playlists),
+                suppressed: suppressedOptions.playlists
+            ),
+            cameraModels: filterSuppressed(
+                mergeRecentFirst(
+                primary: persistedOptions.cameraModels,
+                secondary: recentOptions.cameraModels,
+                trailing: defaultCameraModels
+                ),
+                suppressed: suppressedOptions.cameraModels
+            )
         )
     }
 
     private static let defaultCameraModels = ["iPhone", "Insta360", "HoverX1", "EOS"]
 
-    private static func parseCSVLine(_ line: String) -> [String] {
-        var result: [String] = []
-        var current = ""
-        var inQuotes = false
-        let characters = Array(line)
-        var index = 0
-        while index < characters.count {
-            let char = characters[index]
-            switch char {
-            case "\"":
-                if inQuotes {
-                    let nextIndex = index + 1
-                    if nextIndex < characters.count, characters[nextIndex] == "\"" {
-                        current.append("\"")
-                        index += 1
-                    } else {
-                        inQuotes = false
-                    }
-                } else {
-                    inQuotes = true
-                }
-            case ",":
-                if inQuotes {
-                    current.append(char)
-                } else {
-                    result.append(current)
-                    current = ""
-                }
-            default:
-                current.append(char)
-            }
-            index += 1
+    private static func mergeRecentFirst(
+        primary: [String],
+        secondary: [String],
+        trailing: [String] = []
+    ) -> [String] {
+        var merged: [String] = []
+        for value in primary + secondary + trailing {
+            guard !value.isEmpty, !merged.contains(value) else { continue }
+            merged.append(value)
         }
-        result.append(current)
-        return result.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return merged
     }
 
-    private static func normalized(_ raw: String) -> [String] {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? [] : [value]
-    }
-
-    private static func splitCSVValues(_ raw: String) -> [String] {
-        raw.split(separator: ",")
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
-    private static func splitParticipants(_ raw: String) -> [String] {
-        let normalized = raw.replacingOccurrences(of: "\u{3000}", with: ",")
-        return normalized
-            .split(whereSeparator: { $0 == "," || $0 == "\n" })
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+    private static func filterSuppressed(_ values: [String], suppressed: [String]) -> [String] {
+        values.filter { !suppressed.contains($0) }
     }
 }

@@ -52,6 +52,7 @@ final class AppViewModel: ObservableObject {
     private let cliService: any CLIServicing
     private let photoLibraryService: any PhotoLibraryServicing
     private let historyCalendarRepository: HistoryCalendarRepository
+    private let metadataHistoryStore: MetadataHistoryStore
     private let calendar: Calendar
 
     init(
@@ -74,6 +75,8 @@ final class AppViewModel: ObservableObject {
         self.isRunning = false
         self.taskProgress = nil
         self.uploadLimitResetEstimate = UploadLimitStateStore(environment: environment).load()
+        self.metadataHistoryStore = MetadataHistoryStore(environment: environment)
+        try? self.metadataHistoryStore.backfillFromUploadHistory()
         self.lastError = ""
         self.uploadConfirmation = nil
         self.photoLibraryAlertState = nil
@@ -178,18 +181,62 @@ final class AppViewModel: ObservableObject {
 
     func selectCommonPlace(_ value: String) {
         commonMetadata.place = value
+        rememberMetadataHistory(place: value)
     }
 
     func selectCommonEventName(_ value: String) {
         commonMetadata.eventName = value
+        rememberMetadataHistory(eventName: value)
     }
 
     func selectCommonPlaylist(_ value: String) {
         commonMetadata.playlistsText = value
+        rememberMetadataHistory(playlists: [value])
     }
 
     func selectCommonCameraModel(_ value: String) {
         commonMetadata.cameraModel = value
+        rememberMetadataHistory(cameraModel: value)
+    }
+
+    func commitCommonPlaceHistory() {
+        rememberMetadataHistory(place: commonMetadata.place)
+    }
+
+    func commitCommonEventNameHistory() {
+        rememberMetadataHistory(eventName: commonMetadata.eventName)
+    }
+
+    func commitCommonPlaylistHistory() {
+        rememberMetadataHistory(playlists: [commonMetadata.playlistsText])
+    }
+
+    func commitCommonCameraModelHistory() {
+        rememberMetadataHistory(cameraModel: commonMetadata.cameraModel)
+    }
+
+    func commitCommonParticipantsHistory() {
+        rememberMetadataHistory(participantNames: [commonMetadata.participantsText])
+    }
+
+    func deleteCommonPlaceHistory(_ value: String) {
+        deleteMetadataHistory(value, kind: .place)
+    }
+
+    func deleteCommonEventNameHistory(_ value: String) {
+        deleteMetadataHistory(value, kind: .eventName)
+    }
+
+    func deleteCommonPlaylistHistory(_ value: String) {
+        deleteMetadataHistory(value, kind: .playlist)
+    }
+
+    func deleteCommonCameraModelHistory(_ value: String) {
+        deleteMetadataHistory(value, kind: .cameraModel)
+    }
+
+    func deleteCommonParticipantHistory(_ value: String) {
+        deleteMetadataHistory(value, kind: .participantName)
     }
 
     func toggleCommonParticipant(_ value: String) {
@@ -200,6 +247,7 @@ final class AppViewModel: ObservableObject {
             names.append(value)
         }
         commonMetadata.participantsText = names.joined(separator: ", ")
+        rememberMetadataHistory(participantNames: names)
     }
 
     func addNewParticipantToCommonMetadata() {
@@ -214,7 +262,38 @@ final class AppViewModel: ObservableObject {
             historicalOptions.participantNames.append(value)
             historicalOptions.participantNames.sort()
         }
+        rememberMetadataHistory(participantNames: [value])
         newParticipantName = ""
+    }
+
+    private func rememberMetadataHistory(
+        place: String? = nil,
+        eventName: String? = nil,
+        participantNames: [String] = [],
+        playlists: [String] = [],
+        cameraModel: String? = nil
+    ) {
+        do {
+            try metadataHistoryStore.remember(
+                place: place,
+                eventName: eventName,
+                participantNames: participantNames,
+                playlists: playlists,
+                cameraModel: cameraModel
+            )
+            refreshHistoricalOptions()
+        } catch {
+            appendLog("Failed to save metadata history: \(error.localizedDescription)")
+        }
+    }
+
+    private func deleteMetadataHistory(_ value: String, kind: MetadataHistoryKind) {
+        do {
+            try metadataHistoryStore.remove(value, kind: kind)
+            refreshHistoricalOptions()
+        } catch {
+            appendLog("Failed to delete metadata history: \(error.localizedDescription)")
+        }
     }
 
     var participantSelection: [String] {

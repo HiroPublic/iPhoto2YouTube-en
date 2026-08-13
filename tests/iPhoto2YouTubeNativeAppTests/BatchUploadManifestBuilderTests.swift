@@ -139,6 +139,206 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         XCTAssertEqual(options.cameraModels, ["EOS", "HoverX1", "Insta360", "iPhone"])
     }
 
+    func testMetadataHistoryStorePersistsManualHistory() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let environment = NativeAppEnvironment(
+            workspaceRoot: root.path,
+            cliRelativePath: ".venv/bin/iphoto2youtube",
+            supportDirectory: ".iphoto2youtube"
+        )
+        let store = MetadataHistoryStore(environment: environment)
+
+        try store.remember(
+            place: "鎌倉",
+            eventName: "夏休み",
+            participantNames: ["光弘, 紀子"],
+            playlists: ["Vlog, Family"],
+            cameraModel: "Insta360"
+        )
+
+        let options = store.load()
+        XCTAssertEqual(options.places, ["鎌倉"])
+        XCTAssertEqual(options.eventNames, ["夏休み"])
+        XCTAssertEqual(options.participantNames, ["紀子", "光弘"])
+        XCTAssertEqual(options.playlists, ["Family", "Vlog"])
+        XCTAssertEqual(options.cameraModels, ["Insta360"])
+    }
+
+    func testLedgerSuggestionLoaderMergesPersistedManualHistory() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let support = root.appendingPathComponent(".iphoto2youtube", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let csv = """
+        video_url,youtube_video_id,title,effective_capture_date,effective_timezone,offset_time_original,file_size_bytes,duration_seconds,width,height,place,content,event_name,participants,camera_model,playlists,original_filename
+        https://x,1,a,2026-04-08,JST,+09:00,1,1,1,1,砧公園,c,花見,"Alice, Bob",iPhone,[散歩] 自宅_花見,a.mov
+        """
+        try csv.write(to: support.appendingPathComponent("ledger.csv"), atomically: true, encoding: .utf8)
+
+        let environment = NativeAppEnvironment(
+            workspaceRoot: root.path,
+            cliRelativePath: ".venv/bin/iphoto2youtube",
+            supportDirectory: ".iphoto2youtube"
+        )
+        let store = MetadataHistoryStore(environment: environment)
+        try store.remember(
+            place: "葉山",
+            eventName: "海",
+            participantNames: ["紀子"],
+            playlists: ["Manual Playlist"],
+            cameraModel: "DJI Pocket"
+        )
+
+        let options = LedgerSuggestionLoader.loadOptions(from: environment)
+        XCTAssertEqual(options.places, ["葉山", "砧公園"])
+        XCTAssertEqual(options.eventNames, ["海", "花見"])
+        XCTAssertTrue(options.participantNames.contains("紀子"))
+        XCTAssertEqual(options.playlists, ["Manual Playlist", "[散歩] 自宅_花見"])
+        XCTAssertEqual(options.cameraModels, ["DJI Pocket", "EOS", "HoverX1", "Insta360", "iPhone"])
+    }
+
+    func testMetadataHistoryStoreBackfillsFromUploadHistoryDatabase() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let support = root.appendingPathComponent(".iphoto2youtube", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let dbURL = support.appendingPathComponent("upload_history.db")
+
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &db), SQLITE_OK)
+        guard let db else {
+            XCTFail("Failed to open test db")
+            return
+        }
+        defer { sqlite3_close(db) }
+
+        let createSQL = """
+        CREATE TABLE upload_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          place TEXT,
+          event_name TEXT,
+          participants_json TEXT NOT NULL,
+          playlists_json TEXT NOT NULL,
+          camera_model TEXT,
+          uploaded_at TEXT NOT NULL
+        );
+        """
+        XCTAssertEqual(sqlite3_exec(db, createSQL, nil, nil, nil), SQLITE_OK)
+
+        let insertSQL = """
+        INSERT INTO upload_history (
+          place, event_name, participants_json, playlists_json, camera_model, uploaded_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(db, insertSQL, -1, &statement, nil), SQLITE_OK)
+        guard let statement else {
+            XCTFail("Failed to prepare insert")
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+
+        func insertRow(
+            place: String,
+            eventName: String,
+            participantsJSON: String,
+            playlistsJSON: String,
+            cameraModel: String,
+            uploadedAt: String
+        ) {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+            sqlite3_bind_text(statement, 1, place, -1, sqliteTransient)
+            sqlite3_bind_text(statement, 2, eventName, -1, sqliteTransient)
+            sqlite3_bind_text(statement, 3, participantsJSON, -1, sqliteTransient)
+            sqlite3_bind_text(statement, 4, playlistsJSON, -1, sqliteTransient)
+            sqlite3_bind_text(statement, 5, cameraModel, -1, sqliteTransient)
+            sqlite3_bind_text(statement, 6, uploadedAt, -1, sqliteTransient)
+            XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+        }
+
+        insertRow(
+            place: "砧公園",
+            eventName: "花見",
+            participantsJSON: "[\"光弘\"]",
+            playlistsJSON: "[\"Old Playlist\"]",
+            cameraModel: "iPhone",
+            uploadedAt: "2026-08-10T10:00:00+09:00"
+        )
+        insertRow(
+            place: "葉山",
+            eventName: "海",
+            participantsJSON: "[\"紀子\", \"光弘\"]",
+            playlistsJSON: "[\"New Playlist\"]",
+            cameraModel: "Insta360",
+            uploadedAt: "2026-08-11T10:00:00+09:00"
+        )
+
+        let environment = NativeAppEnvironment(
+            workspaceRoot: root.path,
+            cliRelativePath: ".venv/bin/iphoto2youtube",
+            supportDirectory: ".iphoto2youtube"
+        )
+        let store = MetadataHistoryStore(environment: environment)
+        try store.backfillFromUploadHistory()
+
+        let options = store.load()
+        XCTAssertEqual(options.places, ["葉山", "砧公園"])
+        XCTAssertEqual(options.eventNames, ["海", "花見"])
+        XCTAssertEqual(options.participantNames, ["紀子", "光弘"])
+        XCTAssertEqual(options.playlists, ["New Playlist", "Old Playlist"])
+        XCTAssertEqual(options.cameraModels, ["Insta360", "iPhone"])
+    }
+
+    func testMetadataHistoryStoreDeleteSuppressesHistoryEntry() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let environment = NativeAppEnvironment(
+            workspaceRoot: root.path,
+            cliRelativePath: ".venv/bin/iphoto2youtube",
+            supportDirectory: ".iphoto2youtube"
+        )
+        let store = MetadataHistoryStore(environment: environment)
+
+        try store.remember(place: "鎌倉", eventName: "夏休み", participantNames: ["紀子"], playlists: ["Vlog"], cameraModel: "Insta360")
+        try store.remove("鎌倉", kind: .place)
+        try store.remove("紀子", kind: .participantName)
+
+        let options = store.load()
+        let suppressed = store.suppressed()
+
+        XCTAssertFalse(options.places.contains("鎌倉"))
+        XCTAssertFalse(options.participantNames.contains("紀子"))
+        XCTAssertEqual(suppressed.places, ["鎌倉"])
+        XCTAssertEqual(suppressed.participantNames, ["紀子"])
+    }
+
+    func testLedgerSuggestionLoaderHonorsSuppressedHistory() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let support = root.appendingPathComponent(".iphoto2youtube", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let csv = """
+        video_url,youtube_video_id,title,effective_capture_date,effective_timezone,offset_time_original,file_size_bytes,duration_seconds,width,height,place,content,event_name,participants,camera_model,playlists,original_filename
+        https://x,1,a,2026-04-08,JST,+09:00,1,1,1,1,砧公園,c,花見,"紀子",iPhone,[散歩] 自宅_花見,a.mov
+        """
+        try csv.write(to: support.appendingPathComponent("ledger.csv"), atomically: true, encoding: .utf8)
+
+        let environment = NativeAppEnvironment(
+            workspaceRoot: root.path,
+            cliRelativePath: ".venv/bin/iphoto2youtube",
+            supportDirectory: ".iphoto2youtube"
+        )
+        let store = MetadataHistoryStore(environment: environment)
+        try store.remove("砧公園", kind: .place)
+        try store.remove("紀子", kind: .participantName)
+
+        let options = LedgerSuggestionLoader.loadOptions(from: environment)
+        XCTAssertFalse(options.places.contains("砧公園"))
+        XCTAssertFalse(options.participantNames.contains("紀子"))
+    }
+
     func testTitlePreviewBuilderIncludesEventName() {
         let title = TitlePreviewBuilder.buildTitle(
             captureDate: Date(timeIntervalSince1970: 0),
