@@ -86,7 +86,7 @@ class UploadFlowTest(unittest.TestCase):
             file_size_bytes=1,
             place="砧公園",
             content="花見",
-            participants=["<光弘>", "紀子"],
+            participants=["<Sample Person A>", "Sample Person B"],
             note="メモ" * 4000 + "<script>",
         )
 
@@ -181,14 +181,14 @@ class UploadFlowTest(unittest.TestCase):
             comparisons = app._compare_local_and_remote(
                 {
                     "title": "2026-04-07-JST_砧公園_春の会_花見",
-                    "description": "[検索用メタデータ]\n参加者: 光弘, 紀子\n[補足メモ]\n",
+                    "description": "[検索用メタデータ]\n参加者: Sample Person A, Sample Person B\n[補足メモ]\n",
                     "tags_json": '["#花見"]',
                     "upload_status": "success",
                     "playlists_json": '["[散歩] 自宅_花見"]',
                 },
                 {
                     "title": "2026-04-07-JST_砧公園_春の会_花見",
-                    "description": "[検索用メタデータ]\r\n参加者: 光弘, 紀子\r\n[補足メモ]",
+                    "description": "[検索用メタデータ]\r\n参加者: Sample Person A, Sample Person B\r\n[補足メモ]",
                     "tags": ["花見"],
                     "privacy_status": "private",
                     "playlists": [{"title": "[散歩] 自宅_花見"}],
@@ -222,7 +222,7 @@ class UploadFlowTest(unittest.TestCase):
                 place="砧公園",
                 content="花見",
                 event_name="春の会",
-                participants=["光弘", "紀子"],
+                participants=["Sample Person A", "Sample Person B"],
                 playlists=["[散歩] 自宅_花見"],
             )
             composed = compose_metadata(metadata)
@@ -355,7 +355,7 @@ class UploadFlowTest(unittest.TestCase):
                 place="砧公園",
                 content="花見",
                 event_name="春の会",
-                participants=["光弘", "紀子"],
+                participants=["Sample Person A", "Sample Person B"],
                 playlists=["[散歩] 自宅_花見"],
             )
             composed = compose_metadata(metadata)
@@ -423,7 +423,7 @@ class UploadFlowTest(unittest.TestCase):
                 place="砧公園",
                 content="花見",
                 event_name="花見",
-                participants=["光弘", "紀子"],
+                participants=["Sample Person A", "Sample Person B"],
                 camera_model="HoverX1",
                 playlists=["HoverX1"],
             )
@@ -504,7 +504,7 @@ class UploadFlowTest(unittest.TestCase):
                 place="砧公園",
                 content="花見",
                 event_name="花見",
-                participants=["光弘", "紀子"],
+                participants=["Sample Person A", "Sample Person B"],
                 camera_model="HoverX1",
                 playlists=["HoverX1"],
                 timezone="JST",

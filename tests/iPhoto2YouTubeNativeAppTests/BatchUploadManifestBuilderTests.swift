@@ -112,7 +112,7 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         let csv = """
         video_url,youtube_video_id,title,effective_capture_date,effective_timezone,offset_time_original,file_size_bytes,duration_seconds,width,height,place,content,event_name,participants,camera_model,playlists,original_filename
         https://x,1,a,2026-04-08,JST,+09:00,1,1,1,1,砧公園,c,花見,"Alice, Bob",iPhone,[散歩] 自宅_花見,a.mov
-        https://y,2,b,2026-04-08,JST,+09:00,1,1,1,1,代々木公園,c,散歩,"光弘　紀子",iPhone,[散歩] 自宅_花見,b.mov
+        https://y,2,b,2026-04-08,JST,+09:00,1,1,1,1,代々木公園,c,散歩,"Sample Person A　Sample Person B",iPhone,[散歩] 自宅_花見,b.mov
         """
         try csv.write(to: support.appendingPathComponent("ledger.csv"), atomically: true, encoding: .utf8)
 
@@ -134,8 +134,8 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         XCTAssertTrue(options.participantNames.contains("Indy"))
         XCTAssertTrue(options.participantNames.contains("大地"))
         XCTAssertTrue(options.participantNames.contains("伊吹"))
-        XCTAssertTrue(options.participantNames.contains("光弘"))
-        XCTAssertTrue(options.participantNames.contains("紀子"))
+        XCTAssertTrue(options.participantNames.contains("Sample Person A"))
+        XCTAssertTrue(options.participantNames.contains("Sample Person B"))
         XCTAssertEqual(options.cameraModels, ["EOS", "HoverX1", "Insta360", "iPhone"])
     }
 
@@ -152,7 +152,7 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         try store.remember(
             place: "鎌倉",
             eventName: "夏休み",
-            participantNames: ["光弘, 紀子"],
+            participantNames: ["Sample Person A, Sample Person B"],
             playlists: ["Vlog, Family"],
             cameraModel: "Insta360"
         )
@@ -160,7 +160,7 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         let options = store.load()
         XCTAssertEqual(options.places, ["鎌倉"])
         XCTAssertEqual(options.eventNames, ["夏休み"])
-        XCTAssertEqual(options.participantNames, ["紀子", "光弘"])
+        XCTAssertEqual(options.participantNames, ["Sample Person B", "Sample Person A"])
         XCTAssertEqual(options.playlists, ["Family", "Vlog"])
         XCTAssertEqual(options.cameraModels, ["Insta360"])
     }
@@ -185,7 +185,7 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         try store.remember(
             place: "葉山",
             eventName: "海",
-            participantNames: ["紀子"],
+            participantNames: ["Sample Person B"],
             playlists: ["Manual Playlist"],
             cameraModel: "DJI Pocket"
         )
@@ -193,7 +193,7 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         let options = LedgerSuggestionLoader.loadOptions(from: environment)
         XCTAssertEqual(options.places, ["葉山", "砧公園"])
         XCTAssertEqual(options.eventNames, ["海", "花見"])
-        XCTAssertTrue(options.participantNames.contains("紀子"))
+        XCTAssertTrue(options.participantNames.contains("Sample Person B"))
         XCTAssertEqual(options.playlists, ["Manual Playlist", "[散歩] 自宅_花見"])
         XCTAssertEqual(options.cameraModels, ["DJI Pocket", "EOS", "HoverX1", "Insta360", "iPhone"])
     }
@@ -261,7 +261,7 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         insertRow(
             place: "砧公園",
             eventName: "花見",
-            participantsJSON: "[\"光弘\"]",
+            participantsJSON: "[\"Sample Person A\"]",
             playlistsJSON: "[\"Old Playlist\"]",
             cameraModel: "iPhone",
             uploadedAt: "2026-08-10T10:00:00+09:00"
@@ -269,7 +269,7 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         insertRow(
             place: "葉山",
             eventName: "海",
-            participantsJSON: "[\"紀子\", \"光弘\"]",
+            participantsJSON: "[\"Sample Person B\", \"Sample Person A\"]",
             playlistsJSON: "[\"New Playlist\"]",
             cameraModel: "Insta360",
             uploadedAt: "2026-08-11T10:00:00+09:00"
@@ -286,7 +286,7 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         let options = store.load()
         XCTAssertEqual(options.places, ["葉山", "砧公園"])
         XCTAssertEqual(options.eventNames, ["海", "花見"])
-        XCTAssertEqual(options.participantNames, ["紀子", "光弘"])
+        XCTAssertEqual(options.participantNames, ["Sample Person B", "Sample Person A"])
         XCTAssertEqual(options.playlists, ["New Playlist", "Old Playlist"])
         XCTAssertEqual(options.cameraModels, ["Insta360", "iPhone"])
     }
@@ -301,17 +301,17 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         )
         let store = MetadataHistoryStore(environment: environment)
 
-        try store.remember(place: "鎌倉", eventName: "夏休み", participantNames: ["紀子"], playlists: ["Vlog"], cameraModel: "Insta360")
+        try store.remember(place: "鎌倉", eventName: "夏休み", participantNames: ["Sample Person B"], playlists: ["Vlog"], cameraModel: "Insta360")
         try store.remove("鎌倉", kind: .place)
-        try store.remove("紀子", kind: .participantName)
+        try store.remove("Sample Person B", kind: .participantName)
 
         let options = store.load()
         let suppressed = store.suppressed()
 
         XCTAssertFalse(options.places.contains("鎌倉"))
-        XCTAssertFalse(options.participantNames.contains("紀子"))
+        XCTAssertFalse(options.participantNames.contains("Sample Person B"))
         XCTAssertEqual(suppressed.places, ["鎌倉"])
-        XCTAssertEqual(suppressed.participantNames, ["紀子"])
+        XCTAssertEqual(suppressed.participantNames, ["Sample Person B"])
     }
 
     func testLedgerSuggestionLoaderHonorsSuppressedHistory() throws {
@@ -321,7 +321,7 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let csv = """
         video_url,youtube_video_id,title,effective_capture_date,effective_timezone,offset_time_original,file_size_bytes,duration_seconds,width,height,place,content,event_name,participants,camera_model,playlists,original_filename
-        https://x,1,a,2026-04-08,JST,+09:00,1,1,1,1,砧公園,c,花見,"紀子",iPhone,[散歩] 自宅_花見,a.mov
+        https://x,1,a,2026-04-08,JST,+09:00,1,1,1,1,砧公園,c,花見,"Sample Person B",iPhone,[散歩] 自宅_花見,a.mov
         """
         try csv.write(to: support.appendingPathComponent("ledger.csv"), atomically: true, encoding: .utf8)
 
@@ -332,11 +332,11 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         )
         let store = MetadataHistoryStore(environment: environment)
         try store.remove("砧公園", kind: .place)
-        try store.remove("紀子", kind: .participantName)
+        try store.remove("Sample Person B", kind: .participantName)
 
         let options = LedgerSuggestionLoader.loadOptions(from: environment)
         XCTAssertFalse(options.places.contains("砧公園"))
-        XCTAssertFalse(options.participantNames.contains("紀子"))
+        XCTAssertFalse(options.participantNames.contains("Sample Person B"))
     }
 
     func testTitlePreviewBuilderIncludesEventName() {
@@ -367,12 +367,12 @@ final class BatchUploadManifestBuilderTests: XCTestCase {
         let comparison = UploadVerificationComparison(
             field: "tags",
             status: "mismatch",
-            local: "#砧公園, #花見, #光弘",
-            remote: "#砧公園, #花見, #紀子"
+            local: "#砧公園, #花見, #SamplePersonA",
+            remote: "#砧公園, #花見, #SamplePersonB"
         )
 
-        XCTAssertEqual(comparison.tagDifference?.missing, ["#光弘"])
-        XCTAssertEqual(comparison.tagDifference?.extra, ["#紀子"])
+        XCTAssertEqual(comparison.tagDifference?.missing, ["#SamplePersonA"])
+        XCTAssertEqual(comparison.tagDifference?.extra, ["#SamplePersonB"])
     }
 
     @MainActor
